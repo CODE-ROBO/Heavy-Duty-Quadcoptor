@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/MATLAB-FFD700?style=for-the-badge&logo=mathworks&logoColor=black" alt="MATLAB"/>
   <img src="https://img.shields.io/badge/Fusion360-00FFFF?style=for-the-badge&logo=Fusion360&logoColor=black" alt="Fusion360"/>
   <img src="https://img.shields.io/badge/Altium-8B0000?style=for-the-badge&logo=altium&logoColor=white" alt="Altium"/>
-  <img src="https://img.shields.io/badge/Altium-8B0000?style=for-the-badge&logo=altium&logoColor=white" alt="Al
+  <img src="https://img.shields.io/badge/Altium-8B0000?style=for-the-badge&logo=altium&logoColor=white" alt="
 </p>
 
 <p align="center">
