@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""
+Multi-Physics Flight Dynamics & Hover Endurance Simulator
+Models aerodynamic thrust generation, propeller induced power losses,
+and empirical battery discharge dynamics across variable payload capacities.
+"""
+
+import numpy as np
+
+def calculate_heavy_quad_performance():
+    # -----------------------------
+    # Platform Physical Constants
+    # -----------------------------
+    air_density = 1.225         # kg/m^3 (ISA Sea Level)
+    gravity = 9.80665           # m/s^2
+    num_rotors = 4
+    
+    prop_diameter_in = 28.0     # 28 inch carbon-fiber folding blades
+    prop_pitch_in = 9.2
+    prop_diameter_m = prop_diameter_in * 0.0254
+    rotor_area = np.pi * (prop_diameter_m / 2.0)**2
+    total_disc_area = num_rotors * rotor_area
+    
+    # Structural & Payload Mass (kg)
+    empty_frame_mass = 7.2      # Frame, motors, ESCs, wiring, landing gear
+    avionics_payload_mass = 1.8 # Pixhawk, RTK, telemetry, companion computer
+    battery_mass = 3.6          # 12S 22,000mAh LiPo pack
+    dry_mass = empty_frame_mass + avionics_payload_mass + battery_mass  # 12.6 kg
+    
+    battery_capacity_ah = 22.0
+    battery_nominal_v = 44.4    # 12S nominal
+    usable_energy_wh = battery_capacity_ah * battery_nominal_v * 0.80  # 80% DoD for longevity
+    
+    figure_of_merit = 0.68      # Propeller aerodynamic efficiency benchmark
+    electrical_efficiency = 0.88 # ESC switching + BLDC motor thermal efficiency
+
+    # -----------------------------
+    # Simulation Across Payload Sweep
+    # -----------------------------
+    payload_sweep = np.linspace(0.0, 8.0, 9)  # 0 to 8 kg external payload
+
+    print("==========================================================================================")
+    print("      HEAVY-DUTY AUTONOMOUS QUADCOPTER: THRUST & HOVER PERFORMANCE MATRIX                 ")
+    print("==========================================================================================")
+    print(f"{'Payload (kg)':<14}{'MTOW (kg)':<12}{'Hover Thrust (N)':<18}{'Power (W)':<14}{'Throttle (%)':<15}{'Endurance (min)':<14}")
+    print("------------------------------------------------------------------------------------------")
+
+    for payload in payload_sweep:
+        mtow = dry_mass + payload
+        weight_n = mtow * gravity
+        hover_thrust_req = weight_n  # Thrust equals weight at steady hover
+
+        # Momentum Theory: Induced velocity v_i = sqrt(T / (2 * rho * A))
+        v_induced = np.sqrt(hover_thrust_req / (2.0 * air_density * total_disc_area))
+        
+        # Ideal induced aerodynamic hover power
+        p_ideal = hover_thrust_req * v_induced
+        
+        # Realistic mechanical power required at motor shafts
+        p_shaft = p_ideal / figure_of_merit
+        
+        # Total electrical power consumed from 12S battery bus
+        p_electrical = p_shaft / electrical_efficiency + 28.0  # +28W baseline compute/avionics
+        
+        # Throttle estimation relative to max static bench thrust (320 N total static ceiling)
+        max_available_thrust_n = 320.0
+        throttle_pct = (hover_thrust_req / max_available_thrust_n) * 100.0
+        
+        # Flight endurance in minutes
+        endurance_hours = usable_energy_wh / p_electrical
+        endurance_minutes = endurance_hours * 60.0
+
+        print(f"{payload:<14.1f}{mtow:<12.2f}{hover_thrust_req:<18.2f}{p_electrical:<14.1f}{throttle_pct:<15.1f}{endurance_minutes:<14.2f}")
+
+    print("==========================================================================================")
+    print("[CRITICAL DESIGN RULE] Ensure Hover Throttle remains <= 65% to guarantee emergency pitch/roll stability authority.")
+
+if __name__ == "__main__":
+    calculate_heavy_quad_performance()
