@@ -1,0 +1,10 @@
+Subsystem,Component,Operating Voltage (V),Continuous Current (A),Peak Current (A),Continuous Power (W),Peak Power (W),Bus Rail
+Propulsion,4x T-Motor U8II KV100 Motors + 28x9.2 Props,44.4,52.00,180.00,2308.80,7992.00,Raw 12S Rail
+Propulsion,4x Flame 60A HV ESCs (Idle + Switching),44.4,0.40,0.80,17.76,35.52,Raw 12S Rail
+Avionics,Pixhawk 6X / Cube Orange Flight Controller,5.3,0.65,1.20,3.45,6.36,Regulated 5.3V
+Navigation,Here4 Dual-Band RTK GNSS + Mag,5.0,0.25,0.40,1.25,2.00,Regulated 5.0V
+Comms,RFD900x 1W Telemetry Modem,5.0,0.80,1.50,4.00,7.50,Regulated 5.0V
+Comms,ELRS 2.4GHz Diversity Receiver,5.0,0.12,0.18,0.60,0.90,Regulated 5.0V
+Onboard Compute,NVIDIA Jetson Orin Nano (Vision AI),12.0,0.85,1.80,10.20,21.60,Regulated 12V
+Sensory/Payload,Terabee TeraRanger LiDAR / Altimeter,5.0,0.15,0.25,0.75,1.25,Regulated 5.0V
+TOTALS,All Systems Combined,--,55.22,186.13,2346.81,8067.13,--
