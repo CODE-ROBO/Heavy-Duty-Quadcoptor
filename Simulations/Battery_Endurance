@@ -1,0 +1,142 @@
+%% =========================================================================
+%  HEAVY-DUTY AUTONOMOUS QUADCOPTER: PROPULSION & BATTERY ENDURANCE SOLVER
+%  Aerodynamics: Glauert Momentum Theory + Blade Profile Drag Loss
+%  Battery: Dynamic 12S LiPo Internal Resistance ($V_{terminal} = V_{oc} - IR_{int}$)
+% =========================================================================
+clear; clc; close all;
+
+%% 1. PHYSICAL, BLADE & ATMOSPHERIC CONSTANTS
+rho        = 1.225;         % Air density at Sea Level (kg/m^3)
+g          = 9.80665;       % Gravity (m/s^2)
+num_rotors = 4;
+
+% Rotor Geometry: 28 x 9.2 inch Carbon Blades
+D_prop     = 28 * 0.0254;   % Propeller diameter (m) [0.7112 m]
+R          = D_prop / 2.0;  % Rotor radius (m)
+A_rotor    = pi * R^2;      % Disc area per rotor (m^2)
+A_total    = num_rotors * A_rotor;
+
+% Aerodynamic Coeffs
+c_mean     = 0.052;         % Mean blade chord (m)
+solidity   = (2 * c_mean) / (pi * R); % Rotor blade solidity
+Cd0        = 0.018;         % Profile drag coefficient
+FM         = 0.70;          % Rotor Figure of Merit (Induced loss correction)
+
+%% 2. POWER SYSTEM & MASS PROPERTIES
+mass_dry   = 12.6;          % Structural dry weight including 12S pack (kg)
+eta_elec   = 0.87;          % Combined ESC + BLDC motor conversion efficiency
+P_avionics = 32.0;          % Fixed baseline electronics drain (W) [Jetson + FC + RTK]
+
+% 12S LiPo Battery Model: 22,000 mAh (22.0 Ah)
+V_cell_nom = 3.70;          % Nominal cell voltage (V)
+V_cell_ocv = 4.15;          % Loaded initial OCV per cell (V)
+V_nom_pack = 12 * V_cell_nom; % 44.4 V nominal
+R_int_pack = 0.024;         % Internal pack resistance (24 mOhms)
+C_rated_ah = 22.0;          % Pack capacity in Ampere-hours
+DoD_limit  = 0.80;          % Usable Depth of Discharge (80%)
+Usable_Ah  = C_rated_ah * DoD_limit;
+
+%% 3. PAYLOAD SWEEP & ENDURANCE ANALYSIS (HOVER)
+payloads = 0:1.0:10.0;      % 0 to 10 kg payload
+n_pts = length(payloads);
+
+hover_thrust_req = zeros(1, n_pts);
+hover_power_elec = zeros(1, n_pts);
+hover_current    = zeros(1, n_pts);
+hover_endurance  = zeros(1, n_pts);
+
+for i = 1:n_pts
+    m_total = mass_dry + payloads(i);
+    T_total = m_total * g;
+    hover_thrust_req(i) = T_total;
+    
+    % Momentum Theory: Induced velocity in hover
+    v_i = sqrt(T_total / (2 * rho * A_total));
+    
+    % Ideal Induced Power + Profile Drag Power (Blade Element Momentum)
+    P_induced = T_total * v_i;
+    P_profile = num_rotors * (rho * A_rotor * (v_i^3) * solidity * Cd0 / 8);
+    P_mech    = (P_induced / FM) + P_profile;
+    
+    % Total Electrical Power drawn from battery
+    P_elec = (P_mech / eta_elec) + P_avionics;
+    hover_power_elec(i) = P_elec;
+    
+    % Terminal Voltage Sag: V_term = (V_oc - sqrt(V_oc^2 - 4*R_int*P_elec)) / 2
+    % Simplified iteratively:
+    I_est = P_elec / V_nom_pack;
+    V_term = (12 * V_cell_ocv) - (I_est * R_int_pack);
+    I_actual = P_elec / V_term;
+    hover_current(i) = I_actual;
+    
+    % Flight Time (minutes)
+    hover_endurance(i) = (Usable_Ah / I_actual) * 60.0;
+end
+
+%% 4. FORWARD FLIGHT VELOCITY POWER POLAR (At Design MTOW: 14.6 kg)
+V_forward = 0:0.5:20;       % 0 to 20 m/s horizontal airspeed
+T_hover_fixed = 14.6 * g;
+Cd_airframe   = 0.45;       % Parasitic drag coefficient
+A_drag_front  = 0.12;       % Frontal equivalent drag area (m^2)
+
+P_forward_elec = zeros(1, length(V_forward));
+for j = 1:length(V_forward)
+    V_inf = V_forward(j);
+    
+    % Parasitic drag of airframe
+    D_parasitic = 0.5 * rho * (V_inf^2) * Cd_airframe * A_drag_front;
+    T_net = sqrt(T_hover_fixed^2 + D_parasitic^2);
+    
+    % Iterative inflow velocity in forward flight (Glauert formula)
+    v_h = sqrt(T_net / (2 * rho * A_total));
+    v_ind = v_h;
+    for iter = 1:10
+        v_ind = v_h^2 / sqrt((V_inf)^2 + (v_ind)^2);
+    end
+    
+    P_ind_fwd  = T_net * v_ind;
+    P_prof_fwd = num_rotors * (rho * A_rotor * (v_h^3) * solidity * Cd0 / 8) * (1 + 4.65*(V_inf / 75)^2);
+    P_para_fwd = D_parasitic * V_inf;
+    
+    P_mech_fwd = (P_ind_fwd / FM) + P_prof_fwd + P_para_fwd;
+    P_forward_elec(j) = (P_mech_fwd / eta_elec) + P_avionics;
+end
+
+%% 5. OUTPUT PLOTS & REPORTS
+figure('Color', [0.1 0.1 0.1], 'Position', [150, 150, 1000, 650]);
+
+subplot(2, 2, 1);
+plot(payloads, hover_endurance, '-o', 'Color', [0 1 0.8], 'LineWidth', 2.0, 'MarkerFaceColor', [0 0.5 0.5]);
+grid on; xlabel('External Payload (kg)'); ylabel('Endurance (minutes)');
+title('Hover Endurance vs. Added Payload (12S 22Ah)', 'Color', 'w');
+set(gca, 'Color', [0.15 0.15 0.15], 'XColor', 'w', 'YColor', 'w');
+
+subplot(2, 2, 2);
+plot(payloads, hover_power_elec, '-s', 'Color', [1 0.8 0], 'LineWidth', 2.0, 'MarkerFaceColor', [0.6 0.4 0]);
+grid on; xlabel('External Payload (kg)'); ylabel('Bus Power (W)');
+title('Total Electrical Power Consumption (W)', 'Color', 'w');
+set(gca, 'Color', [0.15 0.15 0.15], 'XColor', 'w', 'YColor', 'w');
+
+subplot(2, 2, 3);
+plot(payloads, hover_current, '-^', 'Color', [1 0.3 0.3], 'LineWidth', 2.0, 'MarkerFaceColor', [0.6 0.1 0.1]);
+grid on; xlabel('External Payload (kg)'); ylabel('Current Draw (A)');
+title('Continuous Bus Current (Amperes)', 'Color', 'w');
+set(gca, 'Color', [0.15 0.15 0.15], 'XColor', 'w', 'YColor', 'w');
+
+subplot(2, 2, 4);
+plot(V_forward, P_forward_elec, 'Color', [0.4 0.7 1], 'LineWidth', 2.2); grid on;
+xlabel('Airspeed (m/s)'); ylabel('Electrical Power (W)');
+title('Power Polar Curve (14.6 kg MTOW)', 'Color', 'w');
+set(gca, 'Color', [0.15 0.15 0.15], 'XColor', 'w', 'YColor', 'w');
+
+% Print Summary Terminal Table
+fprintf('========================================================================================\n');
+fprintf('                HEAVY-DUTY QUADCOPTER SIMULATION SUMMARY RESULTS                        \n');
+fprintf('========================================================================================\n');
+fprintf('%-15s %-15s %-15s %-18s %-15s\n', 'Payload (kg)', 'MTOW (kg)', 'Power (W)', 'Current (A)', 'Hover Time (min)');
+fprintf('----------------------------------------------------------------------------------------\n');
+for idx = 1:2:n_pts
+    fprintf('%-15.1f %-15.2f %-15.1f %-18.2f %-15.2f\n', ...
+        payloads(idx), mass_dry + payloads(idx), hover_power_elec(idx), hover_current(idx), hover_endurance(idx));
+end
+fprintf('========================================================================================\n');
