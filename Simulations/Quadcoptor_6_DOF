@@ -1,0 +1,182 @@
+%% =========================================================================
+%  HEAVY-DUTY AUTONOMOUS QUADCOPTER: 6-DOF NON-LINEAR FLIGHT SIMULATOR
+%  Architecture: X-Configuration Quadcopter (960mm Wheelbase, MTOW: 14.6 kg)
+%  Dynamics: Newton-Euler Rigid Body Formulation + Cascaded PID Loops
+% =========================================================================
+clear; clc; close all;
+
+%% 1. PLATFORM PHYSICAL & INERTIAL PARAMETERS
+m     = 14.6;           % Total mass (kg) [Airframe + 12S Battery + Payload]
+g     = 9.80665;        % Gravitational acceleration (m/s^2)
+l     = 0.480;          % Arm length from CG to motor center (m) [960mm diagonal]
+Ixx   = 0.285;          % Roll moment of inertia (kg*m^2)
+Iyy   = 0.292;          % Pitch moment of inertia (kg*m^2)
+Izz   = 0.540;          % Yaw moment of inertia (kg*m^2)
+I     = diag([Ixx, Iyy, Izz]);
+invI  = inv(I);
+
+% Aerodynamic & Motor Constants (28x9.2 Propellers + T-Motor KV100)
+kt    = 1.42e-5;        % Rotor thrust coefficient (N / (rad/s)^2)
+kq    = 2.15e-7;        % Rotor drag/torque coefficient (N*m / (rad/s)^2)
+w_max = 350.0;          % Max motor angular velocity (rad/s)
+w_min = 40.0;           % Min motor idle angular velocity (rad/s)
+
+%% 2. SIMULATION TIMESTEP & SETUP
+dt    = 0.005;          % Timestep: 200 Hz control loop (s)
+t_end = 15.0;           % Total flight duration (s)
+t     = 0:dt:t_end;
+N     = length(t);
+
+% State vector: [x; y; z; u; v; w; phi; theta; psi; p; q; r]
+% Positions in NED frame (z is down), velocities in body frame
+states = zeros(12, N);
+states(:, 1) = [0; 0; -0.1; 0; 0; 0; 0; 0; 0; 0; 0; 0]; % Initial takeoff point
+
+% Setpoints
+z_target     = -10.0;   % Target hover altitude: 10 meters (NED = -10m)
+roll_target  = 0.0;     % Radian setpoints
+pitch_target = 0.0;
+yaw_target   = 0.0;
+
+%% 3. CONTROLLER GAINS (Cascaded PID)
+% Altitude Loop (Z axis)
+Kp_z = 2.4;  Kd_z = 3.2;  Ki_z = 0.35;
+e_z_int = 0;
+
+% Attitude Inner Loops (Roll, Pitch, Yaw)
+Kp_roll  = 6.5;   Kd_roll  = 0.18;   Ki_roll  = 0.05;
+Kp_pitch = 6.5;   Kd_pitch = 0.18;   Ki_pitch = 0.05;
+Kp_yaw   = 3.2;   Kd_yaw   = 0.22;   Ki_yaw   = 0.01;
+
+e_roll_int = 0;  e_pitch_int = 0;  e_yaw_int = 0;
+
+% Allocation Matrix (X-Configuration):
+% Motor 1: Front-Right (CCW), Motor 2: Rear-Right (CW)
+% Motor 3: Rear-Left (CCW),  Motor 4: Front-Left (CW)
+d = l / sqrt(2);
+alloc = [ kt,      kt,      kt,      kt;
+         -d*kt,    d*kt,    d*kt,   -d*kt;
+         -d*kt,   -d*kt,    d*kt,    d*kt;
+         -kq,      kq,     -kq,      kq   ];
+inv_alloc = pinv(alloc);
+
+motor_speeds = zeros(4, N);
+
+%% 4. NUMERICAL INTEGRATION (Runge-Kutta 4th Order)
+fprintf('Computing 6-DOF dynamic simulation trajectory...\n');
+for k = 1:N-1
+    curr_state = states(:, k);
+    
+    % Extract current states
+    z_pos = curr_state(3);
+    w_vel = curr_state(6);
+    phi   = curr_state(7);
+    theta = curr_state(8);
+    psi   = curr_state(9);
+    p_ang = curr_state(10);
+    q_ang = curr_state(11);
+    r_ang = curr_state(12);
+    
+    % Altitude PID
+    e_z = z_target - z_pos;
+    e_z_int = e_z_int + e_z * dt;
+    thrust_des = m * g + (Kp_z * e_z + Kd_z * (-w_vel) + Ki_z * e_z_int);
+    
+    % Attitude PIDs
+    e_roll  = roll_target - phi;
+    e_pitch = pitch_target - theta;
+    e_yaw   = yaw_target - psi;
+    
+    e_roll_int  = e_roll_int + e_roll * dt;
+    e_pitch_int = e_pitch_int + e_pitch * dt;
+    e_yaw_int   = e_yaw_int + e_yaw * dt;
+    
+    tau_x = Kp_roll  * e_roll  + Kd_roll  * (-p_ang) + Ki_roll  * e_roll_int;
+    tau_y = Kp_pitch * e_pitch + Kd_pitch * (-q_ang) + Ki_pitch * e_pitch_int;
+    tau_z = Kp_yaw   * e_yaw   + Kd_yaw   * (-r_ang) + Ki_yaw   * e_yaw_int;
+    
+    % Motor Mixer & Saturation
+    control_vector = [thrust_des; tau_x; tau_y; tau_z];
+    w_sq = inv_alloc * control_vector;
+    w_sq = max(w_min^2, min(w_max^2, w_sq));
+    w_cmd = sqrt(w_sq);
+    motor_speeds(:, k) = w_cmd;
+    
+    % Actual forces and moments delivered
+    actual_f_tau = alloc * (w_cmd.^2);
+    
+    % RK4 Step
+    k1 = quad_derivatives(curr_state, actual_f_tau, m, g, I, invI);
+    k2 = quad_derivatives(curr_state + 0.5*dt*k1, actual_f_tau, m, g, I, invI);
+    k3 = quad_derivatives(curr_state + 0.5*dt*k2, actual_f_tau, m, g, I, invI);
+    k4 = quad_derivatives(curr_state + dt*k3, actual_f_tau, m, g, I, invI);
+    
+    states(:, k+1) = curr_state + (dt/6.0) * (k1 + 2*k2 + 2*k3 + k4);
+end
+motor_speeds(:, N) = motor_speeds(:, N-1);
+
+%% 5. VISUALIZATION & LOGGING
+figure('Color', [0.1 0.1 0.1], 'Position', [100, 100, 1100, 700]);
+
+subplot(2, 2, 1);
+plot(t, -states(3, :), 'Color', [0 1 1], 'LineWidth', 2.0); grid on;
+hold on; yline(-z_target, '--r', 'Target (10m)');
+title('Altitude Hold Response (m)', 'Color', 'w'); xlabel('Time (s)'); ylabel('Altitude (m)');
+set(gca, 'Color', [0.15 0.15 0.15], 'XColor', 'w', 'YColor', 'w');
+
+subplot(2, 2, 2);
+plot(t, rad2deg(states(7, :)), 'r', 'LineWidth', 1.5); hold on;
+plot(t, rad2deg(states(8, :)), 'g', 'LineWidth', 1.5);
+plot(t, rad2deg(states(9, :)), 'b', 'LineWidth', 1.5); grid on;
+title('Attitude Evolution (Roll, Pitch, Yaw)', 'Color', 'w'); xlabel('Time (s)'); ylabel('Degrees');
+legend({'Roll (\phi)', 'Pitch (\theta)', 'Yaw (\psi)'}, 'TextColor', 'w', 'Color', [0.2 0.2 0.2]);
+set(gca, 'Color', [0.15 0.15 0.15], 'XColor', 'w', 'YColor', 'w');
+
+subplot(2, 2, 3);
+plot(t, motor_speeds(1, :), 'Color', [1 0.8 0], 'LineWidth', 1.2); hold on;
+plot(t, motor_speeds(2, :), 'Color', [1 0.4 0], 'LineWidth', 1.2);
+plot(t, motor_speeds(3, :), 'Color', [0.2 1 0.2], 'LineWidth', 1.2);
+plot(t, motor_speeds(4, :), 'Color', [0.2 0.6 1], 'LineWidth', 1.2); grid on;
+title('Rotor Speeds (\omega_1 - \omega_4)', 'Color', 'w'); xlabel('Time (s)'); ylabel('rad/s');
+legend({'Motor 1', 'Motor 2', 'Motor 3', 'Motor 4'}, 'TextColor', 'w', 'Color', [0.2 0.2 0.2]);
+set(gca, 'Color', [0.15 0.15 0.15], 'XColor', 'w', 'YColor', 'w');
+
+subplot(2, 2, 4);
+plot3(states(2, :), states(1, :), -states(3, :), 'Color', [0.2 1 0.8], 'LineWidth', 2.0); grid on;
+title('3D Flight Trajectory Profile', 'Color', 'w'); xlabel('Y - East (m)'); ylabel('X - North (m)'); zlabel('Altitude (m)');
+set(gca, 'Color', [0.15 0.15 0.15], 'XColor', 'w', 'YColor', 'w', 'ZColor', 'w');
+view(45, 30);
+
+%% 6. EQUATIONS OF MOTION FUNCTION
+function dxdt = quad_derivatives(x, f_tau, m, g, I, invI)
+    % Unpack state
+    u = x(4); v = x(5); w = x(6);
+    phi = x(7); theta = x(8); psi = x(9);
+    p = x(10); q = x(11); r = x(12);
+    
+    % Direction Cosine Matrix (Body to Inertial)
+    R_b2i = [ cos(theta)*cos(psi),  sin(phi)*sin(theta)*cos(psi) - cos(phi)*sin(psi),  cos(phi)*sin(theta)*cos(psi) + sin(phi)*sin(psi);
+              cos(theta)*sin(psi),  sin(phi)*sin(theta)*sin(psi) + cos(phi)*cos(psi),  cos(phi)*sin(theta)*sin(psi) - sin(phi)*cos(psi);
+             -sin(theta),           sin(phi)*cos(theta),                               cos(phi)*cos(theta) ];
+    
+    % Linear Kinematics: dP/dt = R * V_body
+    V_dot_pos = R_b2i * [u; v; w];
+    
+    % Linear Dynamics: Body frame acceleration
+    T = f_tau(1); % Total thrust along negative Z-body
+    gravity_body = R_b2i' * [0; 0; m * g];
+    accel_body = (1/m) * ([0; 0; -T] + gravity_body) - cross([p; q; r], [u; v; w]);
+    
+    % Rotational Kinematics
+    W_rot = [ 1,  sin(phi)*tan(theta),  cos(phi)*tan(theta);
+              0,  cos(phi),            -sin(phi);
+              0,  sin(phi)/cos(theta),  cos(phi)/cos(theta) ];
+    rot_kinematics = W_rot * [p; q; r];
+    
+    % Rotational Dynamics (Euler Equations): I*w_dot + w x (I*w) = Tau
+    omega = [p; q; r];
+    tau = f_tau(2:4);
+    omega_dot = invI * (tau - cross(omega, I * omega));
+    
+    dxdt = [V_dot_pos; accel_body; rot_kinematics; omega_dot];
+end
